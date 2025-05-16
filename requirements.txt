@@ -1,4 +1,3 @@
 fastapi
 uvicorn[standard]
 python-pptx
-comtypes ; sys_platform == "win32"

@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, F
 from fastapi.responses import FileResponse
 from pptx import Presentation
 from pptx.shapes.graphfrm import GraphicFrame
-import comtypes.client
+import subprocess
 import uuid
 import os
 import platform
@@ -32,7 +32,6 @@ def substituir_texto_em_shape(shape, substituicoes):
                             if chave in texto_limpo:
                                 run.text = texto_original.replace(chave, valor).strip()
 
-
 # Gera novo pptx com substituições
 def substituir_em_apresentacao(caminho_entrada, caminho_saida, substituicoes):
     prs = Presentation(caminho_entrada)
@@ -41,32 +40,40 @@ def substituir_em_apresentacao(caminho_entrada, caminho_saida, substituicoes):
             substituir_texto_em_shape(shape, substituicoes)
     prs.save(caminho_saida)
 
-
-# Converte pptx -> pdf usando PowerPoint via COM (Windows only)
+# Converte pptx -> pdf usando LibreOffice
 def converter_para_pdf(pptx_path):
-    if platform.system() != "Windows":
-        raise Exception("Conversão via PowerPoint só é suportada no Windows.")
+    try:
+        output_dir = os.path.dirname(os.path.abspath(pptx_path))
 
-    powerpoint = comtypes.client.CreateObject("PowerPoint.Application")
-    powerpoint.Visible = 1
+        # Detecta Windows e usa caminho absoluto
+        if platform.system() == "Windows":
+            libreoffice_path = r"C:\Program Files\LibreOffice\program\soffice.exe"  # ajuste se necessário
+        else:
+            libreoffice_path = "libreoffice"
 
-    caminho_absoluto = os.path.abspath(pptx_path)
-    caminho_pdf = caminho_absoluto.replace(".pptx", ".pdf")
+        result = subprocess.run([
+            libreoffice_path,
+            "--headless",
+            "--convert-to", "pdf",
+            "--outdir", output_dir,
+            pptx_path
+        ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    presentation = powerpoint.Presentations.Open(caminho_absoluto, WithWindow=False)
-    presentation.SaveAs(caminho_pdf, 32)  # 32 = PDF
-    presentation.Close()
-    powerpoint.Quit()
+        pdf_path = pptx_path.replace(".pptx", ".pdf")
+        if not os.path.exists(pdf_path):
+            raise Exception("Conversão falhou: arquivo PDF não foi gerado.")
 
-    return caminho_pdf
-
+        return pdf_path
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Erro na conversão para PDF: {e.stderr.decode()}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro: {str(e)}")
 
 # Limpa arquivos depois da resposta
 def remover_arquivos(*caminhos):
     for caminho in caminhos:
         if os.path.exists(caminho):
             os.remove(caminho)
-
 
 # Novo endpoint para receber o arquivo .pptx e o JSON com substituições
 @app.post("/editar/")
