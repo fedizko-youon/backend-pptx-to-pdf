@@ -1,5 +1,3 @@
 fastapi
 uvicorn
 python-pptx
-convert2pdf
-python-multipart

@@ -2,15 +2,13 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, F
 from fastapi.responses import FileResponse
 from pptx import Presentation
 from pptx.shapes.graphfrm import GraphicFrame
-import subprocess
-import uuid
+import tempfile
 import os
-import platform
 import json
 
 app = FastAPI()
 
-# Substituição nos shapes
+# Substitui texto nos shapes (textos e tabelas)
 def substituir_texto_em_shape(shape, substituicoes):
     if shape.has_text_frame:
         for paragraph in shape.text_frame.paragraphs:
@@ -21,8 +19,7 @@ def substituir_texto_em_shape(shape, substituicoes):
                     if chave in texto_limpo:
                         run.text = texto_original.replace(chave, valor).strip()
     elif isinstance(shape, GraphicFrame) and shape.has_table:
-        table = shape.table
-        for row in table.rows:
+        for row in shape.table.rows:
             for cell in row.cells:
                 for paragraph in cell.text_frame.paragraphs:
                     for run in paragraph.runs:
@@ -32,7 +29,7 @@ def substituir_texto_em_shape(shape, substituicoes):
                             if chave in texto_limpo:
                                 run.text = texto_original.replace(chave, valor).strip()
 
-# Gera novo pptx com substituições
+# Aplica substituições no arquivo PPTX
 def substituir_em_apresentacao(caminho_entrada, caminho_saida, substituicoes):
     prs = Presentation(caminho_entrada)
     for slide in prs.slides:
@@ -40,42 +37,13 @@ def substituir_em_apresentacao(caminho_entrada, caminho_saida, substituicoes):
             substituir_texto_em_shape(shape, substituicoes)
     prs.save(caminho_saida)
 
-# Converte pptx -> pdf usando LibreOffice
-def converter_para_pdf(pptx_path):
-    try:
-        output_dir = os.path.dirname(os.path.abspath(pptx_path))
-
-        # Detecta Windows e usa caminho absoluto
-        if platform.system() == "Windows":
-            libreoffice_path = r"C:\Program Files\LibreOffice\program\soffice.exe"  # ajuste se necessário
-        else:
-            libreoffice_path = "libreoffice"
-
-        result = subprocess.run([
-            libreoffice_path,
-            "--headless",
-            "--convert-to", "pdf",
-            "--outdir", output_dir,
-            pptx_path
-        ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-        pdf_path = pptx_path.replace(".pptx", ".pdf")
-        if not os.path.exists(pdf_path):
-            raise Exception("Conversão falhou: arquivo PDF não foi gerado.")
-
-        return pdf_path
-    except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=f"Erro na conversão para PDF: {e.stderr.decode()}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erro: {str(e)}")
-
-# Limpa arquivos depois da resposta
+# Remove arquivos temporários
 def remover_arquivos(*caminhos):
     for caminho in caminhos:
         if os.path.exists(caminho):
             os.remove(caminho)
 
-# Novo endpoint para receber o arquivo .pptx e o JSON com substituições
+# Endpoint principal
 @app.post("/editar/")
 async def editar_pptx_upload(
     background_tasks: BackgroundTasks,
@@ -83,32 +51,35 @@ async def editar_pptx_upload(
     substituicoes_json: str = Form(...)
 ):
     try:
-        # Lê e salva o arquivo recebido
-        pptx_filename = f"upload_{uuid.uuid4()}.pptx"
-        with open(pptx_filename, "wb") as f:
-            f.write(await file.read())
-
-        # Converte string JSON para dicionário
         try:
             substituicoes = json.loads(substituicoes_json)
         except json.JSONDecodeError:
             raise HTTPException(status_code=400, detail="JSON de substituições inválido.")
 
-        # Gera novo arquivo pptx com substituições
-        pptx_editado = f"editado_{uuid.uuid4()}.pptx"
-        substituir_em_apresentacao(pptx_filename, pptx_editado, substituicoes)
+        # Cria arquivos temporários (entrada e saída)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pptx") as temp_input:
+            temp_input.write(await file.read())
+            temp_input_path = temp_input.name
 
-        # Converte para PDF
-        pdf_path = converter_para_pdf(pptx_editado)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pptx") as temp_output:
+            temp_output_path = temp_output.name
 
-        # Adiciona arquivos temporários para limpeza
-        background_tasks.add_task(remover_arquivos, pptx_filename, pptx_editado, pdf_path)
+        # Aplica substituições
+        substituir_em_apresentacao(temp_input_path, temp_output_path, substituicoes)
 
-        nome_cliente = substituicoes.get("nome_cliente", "Cliente")  # fallback caso não venha no JSON
+        # Nome do arquivo final
+        nome_cliente = substituicoes.get("nome_cliente", "Cliente")
         nome_cliente_sanitizado = "".join(c for c in nome_cliente if c.isalnum() or c in (" ", "_", "-")).strip()
-        nome_pdf = f"Proposta Comercial {nome_cliente_sanitizado}.pdf"
+        nome_final = f"Proposta Comercial {nome_cliente_sanitizado}.pptx"
 
-        return FileResponse(pdf_path, filename=nome_pdf, media_type="application/pdf")
+        # Limpeza pós-resposta
+        background_tasks.add_task(remover_arquivos, temp_input_path, temp_output_path)
+
+        return FileResponse(
+            temp_output_path,
+            filename=nome_final,
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro: {str(e)}")
