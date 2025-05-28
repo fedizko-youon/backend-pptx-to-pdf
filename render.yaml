@@ -1,6 +1,0 @@
-services:
-  - type: web
-    name: fastapi-pptx
-    env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: sh start.sh
